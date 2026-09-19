@@ -1,5 +1,5 @@
 # Repbook
-#### Video Demo:  <URL HERE>
+#### Video Demo:  https://youtu.be/NIzPJolw0Rk
 #### Description:
 
 Repbook is a web app for keeping a personal library of workouts and grouping them into routines. A user creates an account, logs in and saves movements such as "Barbell squat", each with optional notes for sets, reps or cues. Workouts can then be combined into routines such as "Lower body A", and one workout can appear in any number of routines. Workouts and routines can be edited and deleted, and each user sees only their own data.
