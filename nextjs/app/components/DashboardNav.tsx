@@ -1,6 +1,5 @@
-import Link from "next/link";
-
 import { logout } from "@/app/actions/auth";
+import NavLink from "@/app/components/NavLink";
 
 export default function DashboardNav({
   username,
@@ -9,12 +8,12 @@ export default function DashboardNav({
 }) {
   return (
     <header className="dashboard-header">
-      <Link href="/workouts" className="brand">
+      <NavLink href="/workouts" className="brand">
         REPBOOK
-      </Link>
+      </NavLink>
       <nav aria-label="Main navigation">
-        <Link href="/workouts">Workouts</Link>
-        <Link href="/routines">Routines</Link>
+        <NavLink href="/workouts">Workouts</NavLink>
+        <NavLink href="/routines">Routines</NavLink>
       </nav>
       <div className="account-menu">
         <span>{username}</span>
