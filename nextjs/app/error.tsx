@@ -1,4 +1,5 @@
 "use client";
+// ai generated
 
 // Also catches errors thrown by the (dashboard) layout, which its own
 // segments' error boundaries don't wrap.

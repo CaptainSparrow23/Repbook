@@ -2,51 +2,49 @@
 #### Video Demo:  https://youtu.be/NIzPJolw0Rk
 #### Description:
 
-Repbook is a web app for keeping a personal library of workouts and grouping them into routines. A user creates an account, logs in and saves movements such as "Barbell squat", each with optional notes for sets, reps or cues. Workouts can then be combined into routines such as "Lower body A", and one workout can appear in any number of routines. Workouts and routines can be edited and deleted, and each user sees only their own data.
+Repbook is a simple workout tracker. After creating an account and logging in, a user can save workouts (for example "Barbell squat", with optional notes on sets and reps) and group them into routines (for example "Leg day"). One workout can be part of several routines. Workouts and routines can be edited and deleted, and each user only ever sees their own.
 
-The project has two parts. `fastapi/` is a Python API built with FastAPI. It stores data in SQLite, hashes passwords with bcrypt, issues JSON Web Tokens and checks that every record a request touches belongs to the user who sent it. `nextjs/` is a Next.js 16 and React 19 frontend written in TypeScript. It renders pages on the server and calls the API on the user's behalf, so the browser only ever talks to Next.js.
+The project has two parts: a backend API written in Python with FastAPI, which stores everything in a SQLite database, and a frontend written in TypeScript with Next.js and React. The browser only talks to Next.js, and Next.js talks to the API on the user's behalf.
 
 #### How it works
 
-**Signing up and logging in.** The login and register forms submit to Server Actions. A Server Action is an async function exported from a file that starts with `"use server"`; it runs on the Next.js server when a form is submitted, so the browser needs no hand-written fetch code. `register` validates the fields, creates the user with `POST /auth/` and then logs them in. Logging in sends the credentials to `POST /auth/token`. FastAPI checks the password against the stored bcrypt hash and returns a JWT (JSON Web Token): a signed string holding the username, the user id and an expiry time 20 minutes ahead. Because the token is signed with a secret key, the API can trust it later without storing sessions. Next.js stores it in a 20-minute cookie named `access_token` marked HttpOnly, which JavaScript on the page cannot read; the browser just sends it back with each request.
+When a user logs in, FastAPI checks their password against a stored bcrypt hash and returns a JSON Web Token (JWT), a signed token that proves who they are. Next.js keeps this token in an HttpOnly cookie, which JavaScript in the browser can't read, and sends it to FastAPI with every request. The token expires after 20 minutes.
 
-**Loading a protected page.** Pages are React Server Components, which run on the server and send finished HTML to the browser. Next.js maps folders inside `app/` to URLs: `app/login/page.tsx` is the page at `/login`, a `layout.tsx` wraps every page in its folder and below it, and a `loading.tsx` or `error.tsx` is shown automatically while a page is loading or if it throws an error. `/workouts` and `/routines` live in the route group `app/(dashboard)/`. The parentheses keep the folder name out of the URL; the group exists so both pages can share a layout. That layout calls `GET /auth/me` with the token in an `Authorization: Bearer` header, redirects to `/login` if there is no valid user, and otherwise renders the navigation bar. In FastAPI, the `get_current_user` dependency (a function FastAPI runs before an endpoint and whose result it passes in) verifies the JWT before any workout or routine code runs.
+Forms use Next.js Server Actions, which are functions that run on the server when a form is submitted. They send the data to FastAPI, show any error message on the form, and refresh the page so the new data appears straight away. On the backend, every request checks that the workout or routine being read or changed belongs to the logged-in user.
 
-**Changing data.** The "Add a workout" form (`WorkoutForm.tsx`) is a client component: its file starts with `"use client"`, so its code is also sent to the browser, which React hooks need. It calls the `createWorkout` action through React's `useActionState` hook, which gives the form the action's result (`{error}` or `{success}`) and a `pending` flag for the button. The action trims the input, rejects a blank name and sends JSON to `POST /workouts/`. FastAPI validates it again with Pydantic (typed Python classes that check request data) and saves it through SQLAlchemy, an ORM (object-relational mapper) that maps Python classes to database tables so no SQL is written by hand. The action then calls `revalidatePath`, which makes Next.js re-render the page with fresh data. Editing works the same way through `PUT`. Deleting uses a plain form bound to `deleteWorkout`, which sends `DELETE` and throws if it fails.
+#### Files
 
-**Building a routine.** The routine form shows one checkbox per workout. `createRoutine` collects the checked ids with `formData.getAll("workouts")` and sends them to `POST /routines/`. FastAPI removes duplicate ids, loads only workouts the user owns, answers 400 if any id is missing or belongs to someone else, and records the links in the `workout_routine` table. Deleting a workout removes it from every routine; deleting a routine keeps its workouts.
+**Backend (`fastapi/`)**
 
-#### Project files
+- `api/main.py` creates the FastAPI app, creates the database tables on first start and connects the routers.
+- `api/database.py` sets up the connection to the SQLite database (`fastapi_project.db`) using SQLAlchemy.
+- `api/models.py` defines the `User`, `Workout` and `Routine` tables, plus a linking table so one workout can belong to many routines.
+- `api/deps.py` holds shared helpers: one opens a database session for each request, and one reads the logged-in user from the token.
+- `api/routers/auth.py` handles registering, logging in and returning the current user.
+- `api/routers/workouts.py` and `api/routers/routines.py` handle listing, creating, updating and deleting workouts and routines, only for the user who owns them.
+- `requirements.txt` lists the Python packages the backend needs.
 
-##### Backend (`fastapi/`)
+**Next.js server code (`nextjs/app/actions/` and `nextjs/app/lib/`)**
 
-- `api/main.py` creates the app, calls `Base.metadata.create_all()` to create the SQLite file and tables on first start, adds CORS middleware for `http://localhost:3000` (CORS is the browser rule for whether a page on one site may call an API on another; since only the Next.js server calls FastAPI, this setting is not actually needed), and includes a `GET /` health check and the three routers.
-- `api/database.py` sets up the SQLAlchemy engine, the session factory and the `Base` class the models inherit from. The path is built from the file's own location, so the database is always `fastapi/fastapi_project.db`.
-- `api/models.py` defines the `User`, `Workout` and `Routine` tables, plus the `workout_routine` association table that links workouts and routines many-to-many. Workouts and routines each have a `user_id`, a `name` and a `description`.
-- `api/deps.py` holds shared dependencies, which are functions FastAPI runs before an endpoint and passes in as arguments. `get_db` opens a database session per request, and `get_current_user` verifies the bearer token with `AUTH_SECRET_KEY` and `AUTH_ALGORITHM` from `fastapi/.env`, returning 401 if it is invalid or expired. The file also creates `bcrypt_context`, the passlib object `auth.py` uses to hash and check passwords.
-- `api/routers/auth.py` handles registration (409 if the username is taken), login (username and password sent as form fields rather than JSON, the format FastAPI's built-in `OAuth2PasswordRequestForm` expects; returns a 20-minute JWT) and `/auth/me`. Usernames must be 3-50 characters and passwords 8-72 characters; the 72 cap matches bcrypt, which uses only the first 72 bytes of a password (so a password with non-ASCII characters can still be truncated).
-- `api/routers/workouts.py` and `api/routers/routines.py` provide list, get, create, update and delete endpoints. Every endpoint except `GET /`, `POST /auth/` and `POST /auth/token` requires the bearer token. `find_owned_workout` and `find_owned_routine` look records up by id and owner together, and `get_owned_workouts` validates the workout ids sent with a routine.
-- `api/__init__.py` and `api/routers/__init__.py` are empty files that make the folders Python packages. `requirements.txt` lists the Python dependencies.
+- `actions/auth.ts` contains the login, register and logout actions, and sets or deletes the login cookie.
+- `actions/workouts.ts` and `actions/routines.ts` contain the create, update and delete actions. If the session has expired, they send the user back to the login page.
+- `lib/api.ts` is a helper that calls FastAPI with the user's token attached.
+- `lib/auth.ts` returns the logged-in user, or `null` if nobody is logged in.
+- `lib/types.ts` defines the TypeScript types for workouts and routines.
 
-##### Next.js server code (`nextjs/app/actions/`, `nextjs/app/lib/`)
+**Pages and components (`nextjs/app/`)**
 
-- `actions/auth.ts` contains the `login`, `register` and `logout` actions. `createSession` sets the cookie: HttpOnly; SameSite=Lax, so the browser does not attach it to POST requests (such as form submissions) coming from other websites; Secure (HTTPS-only) in production; and a 20-minute lifetime. `register` checks the minimum lengths (3 for the username, 8 for the password) and that both passwords match before calling FastAPI, then logs the new user in. The maximums are enforced by the inputs' `maxLength` and by FastAPI.
-- `actions/workouts.ts` and `actions/routines.ts` contain the create, update and delete actions. Workout changes revalidate both pages, because routine cards show workout names. Each file's `handleUnauthorized` deletes the cookie and redirects to `/login` when FastAPI returns 401.
-- `lib/api.ts` provides `fastApiFetch`, which reads `FASTAPI_URL`, adds the bearer header from the cookie and disables caching, and `readApiError`, which passes FastAPI's `detail` message (such as "Username already exists") back to the form. It imports `server-only`, so the build fails if browser code ever imports it.
-- `lib/auth.ts` provides `getCurrentUser`, which calls `/auth/me` and returns the user or `null`. `lib/types.ts` defines the `Workout`, `Routine` and `ActionState` types.
+- `layout.tsx` is the root layout. It loads the styles and sets the page titles.
+- `page.tsx` is the home page. It sends visitors to `/workouts` if they are logged in, or to `/login` if they aren't.
+- `login/` and `register/` contain the login and sign-up pages and their forms.
+- `(dashboard)/layout.tsx` is shared by the workouts and routines pages. It checks that the user is logged in and shows the navigation bar. The brackets in the folder name keep it out of the URL.
+- `(dashboard)/workouts/page.tsx` and `(dashboard)/routines/page.tsx` load the user's data and show a form for adding a new item next to the list of saved ones.
+- The `loading.tsx` and `error.tsx` files in those folders show a placeholder while a page loads, and an error screen with a "Try again" button if loading fails. The root `error.tsx` catches errors from the rest of the app, for example when the API isn't running.
+- `components/WorkoutForm.tsx` and `components/RoutineForm.tsx` are the forms for adding workouts and routines. The routine form shows a checkbox for each workout.
+- `components/WorkoutEditor.tsx` and `components/RoutineEditor.tsx` show each saved item as a card that expands into an edit form with a delete button.
+- `components/DashboardNav.tsx` is the header, with the navigation links, the username and a logout button.
+- `components/NavLink.tsx` is a navigation link that scrolls back to the top of the page when switching between workouts and routines.
+- `components/SubmitButton.tsx` is a button that shows "Deleting..." while a delete is in progress.
+- `globals.css` contains all of the app's styling.
 
-##### Pages and components (`nextjs/app/`)
-
-- `layout.tsx` loads `globals.css` and sets page titles such as "Workouts · Repbook". `page.tsx` redirects `/` to `/workouts` or `/login`.
-- `error.tsx` is the root error boundary, the component Next.js shows when rendering throws. It has its own "We couldn't reach Repbook." screen because it catches errors from outside the dashboard pages: the dashboard layout, the home redirect and the login and register pages, for example when FastAPI is not running.
-- `globals.css` holds the styling: about 650 lines of hand-written CSS with colour variables, a loading skeleton and small-screen breakpoints at 820px and 520px. Its first line, `@import "tailwindcss"`, is left over from `create-next-app`: it applies Tailwind's base CSS reset, but the app uses its own class names rather than Tailwind utility classes.
-- In `login/` and `register/`, each `page.tsx` redirects logged-in users to `/workouts` and renders a client form (`LoginForm.tsx`, `RegisterForm.tsx`) connected to its action through `useActionState`.
-- `(dashboard)/layout.tsx` checks the user and renders `DashboardNav`. `workouts/page.tsx` and `routines/page.tsx` fetch their data (routines and workouts in parallel on the routines page) and show a create form beside the saved list. `workouts/loading.tsx` is the loading skeleton (grey placeholder blocks shown while the page's data loads) and `workouts/error.tsx` the "We couldn't load your training data" screen. `routines/loading.tsx` and `routines/error.tsx` re-export these two files. Each error screen has a "Try again" button that calls `unstable_retry`, a Next.js 16.2 prop that fetches and renders the failed part of the page again.
-- `components/DashboardNav.tsx` is the sticky header, with links to both pages (built with `NavLink`), the username and a logout form.
-- `components/NavLink.tsx` is a small client component that wraps Next.js's `Link` and scrolls the window to the top on click. The header sits in the shared dashboard layout, and Next.js only scrolls after navigation when the new page's top edge is off-screen, a check that ignores the sticky header. Without this, switching between Workouts and Routines could keep the old scroll position.
-- `components/WorkoutForm.tsx` and `components/RoutineForm.tsx` are the create forms. `RoutineForm` renders a checkbox for each workout.
-- `components/WorkoutEditor.tsx` and `components/RoutineEditor.tsx` show each saved item as a card with a collapsible Edit panel (a `<details>` element) that holds the edit form and a delete button. They bind the id into the action (`updateWorkout.bind(null, workout.id)`) instead of using a hidden form field.
-- `components/SubmitButton.tsx` uses the `useFormStatus` hook from `react-dom` to show "Deleting..." while a delete form submits.
-
-`nextjs/next.config.ts` sets `turbopack.root` (Turbopack is the Next.js bundler) to the folder `npm run dev` runs in, because the repository root has its own `package-lock.json`. The root `.gitignore` keeps `.env` files, databases, virtual environments, `node_modules` and build output out of Git. Everything else in `nextjs/` (including `app/favicon.ico`) is unmodified `create-next-app` output, and the root `package.json` lists axios and bootstrap, which the app does not use.
-
+`next.config.ts` tells Next.js which folder is the project root. The other config files in `nextjs/` are the defaults created by `create-next-app`.
