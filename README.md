@@ -1,187 +1,133 @@
 # Repbook
+#### Video Demo:  <URL HERE>
+#### Description:
 
-Repbook is a small full-stack workout tracker built as a learning project with
-Next.js and FastAPI. Users can create an account, log in, save workouts, and
-group workouts into routines.
+Repbook is a web app for keeping a personal library of workouts and grouping them into routines. A user creates an account, logs in and saves movements such as "Barbell squat", each with optional notes for sets, reps or cues. Workouts can then be combined into routines such as "Lower body A", and one workout can appear in any number of routines. Workouts and routines can be edited and deleted, and each user sees only their own data.
 
-The project demonstrates authenticated server-rendered pages, Server Actions,
-JWT authentication, SQLAlchemy relationships, and ownership-based
-authorization.
-
-## Stack
-
-- Next.js 16 and React 19
-- TypeScript
-- FastAPI
-- SQLAlchemy
-- SQLite
-- Pydantic
-- JWT and bcrypt authentication
-
-## Architecture
+The project has two parts. `fastapi/` is a Python API built with FastAPI. It stores data in SQLite, hashes passwords with bcrypt, issues JSON Web Tokens and checks that every record a request touches belongs to the user who sent it. `nextjs/` is a Next.js 16 and React 19 frontend written in TypeScript. It renders pages on the server and calls the API on the user's behalf, so the browser only ever talks to Next.js.
 
 ```text
-Browser
-  → Next.js Server Components and Server Actions
-  → FastAPI
-  → SQLAlchemy
-  → SQLite
+Browser (HTML forms, a few React client components)
+   |  cookie: access_token (HttpOnly)
+   v
+Next.js server, port 3000 (Server Components, Server Actions)
+   |  header: Authorization: Bearer <JWT>
+   v
+FastAPI, port 8000 (Pydantic validation, JWT and ownership checks)
+   |
+   v
+SQLAlchemy ORM -> SQLite (fastapi/fastapi_project.db)
 ```
 
-FastAPI creates and validates JWTs. Next.js stores the JWT in an HttpOnly
-cookie and forwards it to FastAPI as a bearer token. FastAPI remains
-responsible for checking authentication and record ownership.
+#### How it works
 
-## Features
+**Signing up and logging in.** The login and register forms submit to Server Actions. A Server Action is an async function exported from a file that starts with `"use server"`; it runs on the Next.js server when a form is submitted, so the browser needs no hand-written fetch code. `register` validates the fields, creates the user with `POST /auth/` and then logs them in. Logging in sends the credentials to `POST /auth/token`. FastAPI checks the password against the stored bcrypt hash and returns a JWT (JSON Web Token): a signed string holding the username, the user id and an expiry time 20 minutes ahead. Because the token is signed with a secret key, the API can trust it later without storing sessions. Next.js stores it in a 20-minute cookie named `access_token` marked HttpOnly, which JavaScript on the page cannot read; the browser just sends it back with each request.
 
-- Account registration and login
-- HttpOnly authentication cookie
-- Protected workout and routine pages
-- Create, view, edit, and delete workouts
-- Create, view, edit, and delete routines
-- Many-to-many workout/routine relationship
-- User ownership checks on protected records
-- Request validation and typed API responses
+**Loading a protected page.** Pages are React Server Components, which run on the server and send finished HTML to the browser. Next.js maps folders inside `app/` to URLs: `app/login/page.tsx` is the page at `/login`, a `layout.tsx` wraps every page in its folder and below it, and a `loading.tsx` or `error.tsx` is shown automatically while a page is loading or if it throws an error. `/workouts` and `/routines` live in the route group `app/(dashboard)/`. The parentheses keep the folder name out of the URL; the group exists so both pages can share a layout. That layout calls `GET /auth/me` with the token in an `Authorization: Bearer` header, redirects to `/login` if there is no valid user, and otherwise renders the navigation bar. In FastAPI, the `get_current_user` dependency (a function FastAPI runs before an endpoint and whose result it passes in) verifies the JWT before any workout or routine code runs.
 
-## Project structure
+**Changing data.** The "Add a workout" form (`WorkoutForm.tsx`) is a client component: its file starts with `"use client"`, so its code is also sent to the browser, which React hooks need. It calls the `createWorkout` action through React's `useActionState` hook, which gives the form the action's result (`{error}` or `{success}`) and a `pending` flag for the button. The action trims the input, rejects a blank name and sends JSON to `POST /workouts/`. FastAPI validates it again with Pydantic (typed Python classes that check request data) and saves it through SQLAlchemy, an ORM (object-relational mapper) that maps Python classes to database tables so no SQL is written by hand. The action then calls `revalidatePath`, which makes Next.js re-render the page with fresh data. Editing works the same way through `PUT`. Deleting uses a plain form bound to `deleteWorkout`, which sends `DELETE` and throws if it fails.
 
-```text
-.
-├── fastapi/
-│   ├── api/
-│   │   ├── routers/
-│   │   │   ├── auth.py
-│   │   │   ├── routines.py
-│   │   │   └── workouts.py
-│   │   ├── database.py
-│   │   ├── deps.py
-│   │   ├── main.py
-│   │   └── models.py
-│   └── requirements.txt
-└── nextjs/
-    ├── app/
-    │   ├── actions/
-    │   ├── components/
-    │   ├── lib/
-    │   ├── login/
-    │   ├── register/
-    │   ├── routines/
-    │   └── workouts/
-    └── package.json
-```
+**Building a routine.** The routine form shows one checkbox per workout. `createRoutine` collects the checked ids with `formData.getAll("workouts")` and sends them to `POST /routines/`. FastAPI removes duplicate ids, loads only workouts the user owns, answers 400 if any id is missing or belongs to someone else, and records the links in the `workout_routine` table. Deleting a workout removes it from every routine; deleting a routine keeps its workouts.
 
-## Local setup
+#### Project files
 
-### 1. Clone the repository
+##### Backend (`fastapi/`)
 
-```bash
-git clone https://github.com/CaptainSparrow23/Repbook.git
-cd Repbook
-```
+- `api/main.py` creates the app, calls `Base.metadata.create_all()` to create the SQLite file and tables on first start, adds CORS middleware for `http://localhost:3000` (CORS is the browser rule for whether a page on one site may call an API on another; since only the Next.js server calls FastAPI, this setting is not actually needed), and includes a `GET /` health check and the three routers.
+- `api/database.py` sets up the SQLAlchemy engine, the session factory and the `Base` class the models inherit from. The path is built from the file's own location, so the database is always `fastapi/fastapi_project.db`.
+- `api/models.py` defines the `User`, `Workout` and `Routine` tables, plus the `workout_routine` association table that links workouts and routines many-to-many. Workouts and routines each have a `user_id`, a `name` and a `description`.
+- `api/deps.py` holds shared dependencies, which are functions FastAPI runs before an endpoint and passes in as arguments. `get_db` opens a database session per request, and `get_current_user` verifies the bearer token with `AUTH_SECRET_KEY` and `AUTH_ALGORITHM` from `fastapi/.env`, returning 401 if it is invalid or expired. The file also creates `bcrypt_context`, the passlib object `auth.py` uses to hash and check passwords.
+- `api/routers/auth.py` handles registration (409 if the username is taken), login (username and password sent as form fields rather than JSON, the format FastAPI's built-in `OAuth2PasswordRequestForm` expects; returns a 20-minute JWT) and `/auth/me`. Usernames must be 3-50 characters and passwords 8-72 characters; the 72 cap matches bcrypt, which uses only the first 72 bytes of a password (so a password with non-ASCII characters can still be truncated).
+- `api/routers/workouts.py` and `api/routers/routines.py` provide list, get, create, update and delete endpoints. Every endpoint except `GET /`, `POST /auth/` and `POST /auth/token` requires the bearer token. `find_owned_workout` and `find_owned_routine` look records up by id and owner together, and `get_owned_workouts` validates the workout ids sent with a routine.
+- `api/__init__.py` and `api/routers/__init__.py` are empty files that make the folders Python packages. `requirements.txt` lists the Python dependencies.
 
-### 2. Set up FastAPI
+##### Next.js server code (`nextjs/app/actions/`, `nextjs/app/lib/`)
 
-Create and activate a virtual environment:
+- `actions/auth.ts` contains the `login`, `register` and `logout` actions. `createSession` sets the cookie: HttpOnly; SameSite=Lax, so the browser does not attach it to POST requests (such as form submissions) coming from other websites; Secure (HTTPS-only) in production; and a 20-minute lifetime. `register` checks the minimum lengths (3 for the username, 8 for the password) and that both passwords match before calling FastAPI, then logs the new user in. The maximums are enforced by the inputs' `maxLength` and by FastAPI.
+- `actions/workouts.ts` and `actions/routines.ts` contain the create, update and delete actions. Workout changes revalidate both pages, because routine cards show workout names. Each file's `handleUnauthorized` deletes the cookie and redirects to `/login` when FastAPI returns 401.
+- `lib/api.ts` provides `fastApiFetch`, which reads `FASTAPI_URL`, adds the bearer header from the cookie and disables caching, and `readApiError`, which passes FastAPI's `detail` message (such as "Username already exists") back to the form. It imports `server-only`, so the build fails if browser code ever imports it.
+- `lib/auth.ts` provides `getCurrentUser`, which calls `/auth/me` and returns the user or `null`. `lib/types.ts` defines the `Workout`, `Routine` and `ActionState` types.
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
+##### Pages and components (`nextjs/app/`)
 
-Install the Python dependencies:
+- `layout.tsx` loads `globals.css` and sets page titles such as "Workouts · Repbook". `page.tsx` redirects `/` to `/workouts` or `/login`.
+- `error.tsx` is the root error boundary, the component Next.js shows when rendering throws. It has its own "We couldn't reach Repbook." screen because it catches errors from outside the dashboard pages: the dashboard layout, the home redirect and the login and register pages, for example when FastAPI is not running.
+- `globals.css` holds the styling: about 650 lines of hand-written CSS with colour variables, a loading skeleton and small-screen breakpoints at 820px and 520px. Its first line, `@import "tailwindcss"`, is left over from `create-next-app`: it applies Tailwind's base CSS reset, but the app uses its own class names rather than Tailwind utility classes.
+- In `login/` and `register/`, each `page.tsx` redirects logged-in users to `/workouts` and renders a client form (`LoginForm.tsx`, `RegisterForm.tsx`) connected to its action through `useActionState`.
+- `(dashboard)/layout.tsx` checks the user and renders `DashboardNav`. `workouts/page.tsx` and `routines/page.tsx` fetch their data (routines and workouts in parallel on the routines page) and show a create form beside the saved list. `workouts/loading.tsx` is the loading skeleton (grey placeholder blocks shown while the page's data loads) and `workouts/error.tsx` the "We couldn't load your training data" screen. `routines/loading.tsx` and `routines/error.tsx` re-export these two files. Each error screen has a "Try again" button that calls `unstable_retry`, a Next.js 16.2 prop that fetches and renders the failed part of the page again.
+- `components/DashboardNav.tsx` is the sticky header, with links to both pages (built with `NavLink`), the username and a logout form.
+- `components/NavLink.tsx` is a small client component that wraps Next.js's `Link` and scrolls the window to the top on click. The header sits in the shared dashboard layout, and Next.js only scrolls after navigation when the new page's top edge is off-screen, a check that ignores the sticky header. Without this, switching between Workouts and Routines could keep the old scroll position.
+- `components/WorkoutForm.tsx` and `components/RoutineForm.tsx` are the create forms. `RoutineForm` renders a checkbox for each workout.
+- `components/WorkoutEditor.tsx` and `components/RoutineEditor.tsx` show each saved item as a card with a collapsible Edit panel (a `<details>` element) that holds the edit form and a delete button. They bind the id into the action (`updateWorkout.bind(null, workout.id)`) instead of using a hidden form field.
+- `components/SubmitButton.tsx` uses the `useFormStatus` hook from `react-dom` to show "Deleting..." while a delete form submits.
 
-```bash
-pip install -r fastapi/requirements.txt
-```
+`nextjs/next.config.ts` sets `turbopack.root` (Turbopack is the Next.js bundler) to the folder `npm run dev` runs in, because the repository root has its own `package-lock.json`. The root `.gitignore` keeps `.env` files, databases, virtual environments, `node_modules` and build output out of Git. Everything else in `nextjs/` (including `app/favicon.ico`) is unmodified `create-next-app` output, and the root `package.json` lists axios and bootstrap, which the app does not use.
 
-Create `fastapi/.env`:
+#### Design decisions
 
-```env
-AUTH_SECRET_KEY=replace-with-a-long-random-secret
-AUTH_ALGORITHM=HS256
-```
+**FastAPI owns authentication, and the token lives in an HttpOnly cookie.** Storing the JWT in `localStorage` and calling FastAPI from the browser would expose the token to any injected script and require CORS rules covering every browser request. Instead, only server code (`fastApiFetch`) turns the cookie into a bearer header, and FastAPI alone creates tokens and decides who owns a record. The cost is an extra hop through Next.js on every request.
 
-You can generate a secret with:
+**Server Actions instead of client-side fetching.** Forms stay plain `<form>` elements, errors come back as a small `{error, success}` object, and `revalidatePath` re-renders pages from the server, so no client-side data store has to be kept in sync. The trade-offs are reliance on Next.js-specific APIs and no optimistic updates: the page changes only after the server replies, instead of updating instantly and rolling back on failure.
 
-```bash
-openssl rand -hex 32
-```
+**A route group for the dashboard.** Instead of every page checking the user and rendering the navigation, `(dashboard)/layout.tsx` does both once. Layouts do not re-run on client-side navigation, so pages and actions also redirect on a 401. There is no `proxy.ts` file (called middleware before Next.js 16), which runs before every request and could redirect logged-out users before any page renders. The signing secret lives only in `fastapi/.env`, so a proxy could only check that the cookie exists, or it would need a FastAPI call on every request. The layout's single `/auth/me` call gives a real check without either cost. The Next.js checks only decide where to send the user, while FastAPI checks the token on every data request. Because a layout's errors escape the error boundaries inside its own group, the root `app/error.tsx` catches them.
 
-Start the API:
+**A many-to-many association table.** A `routine_id` column on workouts would limit each workout to one routine, though the same exercise often belongs in several. The `workout_routine` table stores id pairs, and SQLAlchemy updates its rows whenever `routine.workouts` is assigned. It has no unique constraint, so duplicate ids are removed in code.
 
-```bash
-cd fastapi
-../.venv/bin/python -m uvicorn api.main:app --reload
-```
+**Ownership checks inside the query, returning 404.** Every lookup filters by record id and user id together. Comparing owners after fetching would allow a 403, but a 403 confirms the id exists; a 404 reveals nothing. Every single-record endpoint goes through one helper per resource (`find_owned_workout`, `find_owned_routine`), so the check is written once instead of in each endpoint.
 
-FastAPI will run at `http://localhost:8000`. Interactive API documentation is
-available at `http://localhost:8000/docs`.
+**SQLite, with tables created at startup.** PostgreSQL would need a database server before anyone could run the project, while SQLite is one file and `create_all` builds the tables automatically. The downside is that `create_all` never alters existing tables, so changing a model means deleting the database.
 
-### 3. Set up Next.js
+**Inline editing with full-replacement PUT.** A native HTML `<details>` element expands each card into an edit form, with no React state for opening and closing it and no extra page or modal. The form always sends every field, so `PUT` replaces the whole record rather than patching fields. Both sides stay simple, but an API client that omits `description` (or a routine's `workouts` list) clears it, and one that omits `name` gets a 422 error.
 
-In another terminal:
+#### Limitations and future work
 
-```bash
-cd nextjs
-npm install
-```
+- Sessions last 20 minutes with no refresh token. Logging out deletes the cookie, but the token stays valid until it expires.
+- A workout is only a name and notes. There are no structured sets, reps, weights, dates or history, and the order of workouts in a routine is not stored. These are the obvious next features.
+- There are no automated tests; the only checks are `npm run lint` and `npm run build`.
+- There are no database migrations, and SQLite foreign keys are not enforced, so data integrity depends on application code.
+- Deleting has no confirmation, and a failed delete shows the generic "couldn't load your training data" page instead of an inline message.
+- `readApiError` assumes `detail` is a string, which is not true for FastAPI's 422 validation errors.
+- Login has no rate limiting, the unneeded CORS middleware in `main.py` could be removed, and `requirements.txt` lists four packages the code does not use (alembic, psycopg2-binary, slowapi, email-validator).
 
-Create `nextjs/.env.local`:
+#### Running locally
 
-```env
-FASTAPI_URL=http://127.0.0.1:8000
-```
+You need Python 3.10 or newer (developed with 3.13) and Node.js 20.9 or newer.
 
-Start the frontend:
+1. Clone the repository:
 
-```bash
-npm run dev
-```
+   ```bash
+   git clone https://github.com/CaptainSparrow23/Repbook.git
+   cd Repbook
+   ```
 
-Open `http://localhost:3000`.
+2. Install the backend:
 
-## API routes
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -r fastapi/requirements.txt
+   ```
 
-### Authentication
+   Then create `fastapi/.env` containing these two lines, replacing the key with the output of `openssl rand -hex 32`:
 
-```text
-POST /auth/         Register a user
-POST /auth/token    Log in and receive a JWT
-GET  /auth/me       Get the authenticated user
-```
+   ```env
+   AUTH_SECRET_KEY=replace-with-a-long-random-secret
+   AUTH_ALGORITHM=HS256
+   ```
 
-### Workouts
+3. Start the API from inside `fastapi/`, since the code imports the `api` package by name. It runs at `http://127.0.0.1:8000`, with interactive docs at `/docs`, and creates the database on first start.
 
-```text
-GET    /workouts/               List the user's workouts
-POST   /workouts/               Create a workout
-GET    /workouts/{workout_id}   Get a workout
-PUT    /workouts/{workout_id}   Update a workout
-DELETE /workouts/{workout_id}   Delete a workout
-```
+   ```bash
+   cd fastapi
+   ../.venv/bin/python -m uvicorn api.main:app --reload
+   ```
 
-### Routines
+4. In a second terminal at the repository root, install the frontend inside `nextjs/` (not the repository root), create `nextjs/.env.local` containing `FASTAPI_URL=http://127.0.0.1:8000`, and start it:
 
-```text
-GET    /routines/               List the user's routines
-POST   /routines/               Create a routine
-GET    /routines/{routine_id}   Get a routine
-PUT    /routines/{routine_id}   Update a routine
-DELETE /routines/{routine_id}   Delete a routine
-```
+   ```bash
+   cd nextjs
+   npm install
+   npm run dev
+   ```
 
-## Checks
-
-Run the frontend checks from `nextjs/`:
-
-```bash
-npm run lint
-npm run build
-```
-
-## Notes
-
-This is a learning project rather than a production-ready authentication
-system. A production deployment would typically add PostgreSQL, Alembic
-migrations, HTTPS, rate limiting, refresh/session management, and automated
-test coverage.
+   Then open `http://localhost:3000`.
