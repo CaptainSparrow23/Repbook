@@ -6,19 +6,6 @@ Repbook is a web app for keeping a personal library of workouts and grouping the
 
 The project has two parts. `fastapi/` is a Python API built with FastAPI. It stores data in SQLite, hashes passwords with bcrypt, issues JSON Web Tokens and checks that every record a request touches belongs to the user who sent it. `nextjs/` is a Next.js 16 and React 19 frontend written in TypeScript. It renders pages on the server and calls the API on the user's behalf, so the browser only ever talks to Next.js.
 
-```text
-Browser (HTML forms, a few React client components)
-   |  cookie: access_token (HttpOnly)
-   v
-Next.js server, port 3000 (Server Components, Server Actions)
-   |  header: Authorization: Bearer <JWT>
-   v
-FastAPI, port 8000 (Pydantic validation, JWT and ownership checks)
-   |
-   v
-SQLAlchemy ORM -> SQLite (fastapi/fastapi_project.db)
-```
-
 #### How it works
 
 **Signing up and logging in.** The login and register forms submit to Server Actions. A Server Action is an async function exported from a file that starts with `"use server"`; it runs on the Next.js server when a form is submitted, so the browser needs no hand-written fetch code. `register` validates the fields, creates the user with `POST /auth/` and then logs them in. Logging in sends the credentials to `POST /auth/token`. FastAPI checks the password against the stored bcrypt hash and returns a JWT (JSON Web Token): a signed string holding the username, the user id and an expiry time 20 minutes ahead. Because the token is signed with a secret key, the API can trust it later without storing sessions. Next.js stores it in a 20-minute cookie named `access_token` marked HttpOnly, which JavaScript on the page cannot read; the browser just sends it back with each request.
@@ -63,71 +50,3 @@ SQLAlchemy ORM -> SQLite (fastapi/fastapi_project.db)
 
 `nextjs/next.config.ts` sets `turbopack.root` (Turbopack is the Next.js bundler) to the folder `npm run dev` runs in, because the repository root has its own `package-lock.json`. The root `.gitignore` keeps `.env` files, databases, virtual environments, `node_modules` and build output out of Git. Everything else in `nextjs/` (including `app/favicon.ico`) is unmodified `create-next-app` output, and the root `package.json` lists axios and bootstrap, which the app does not use.
 
-#### Design decisions
-
-**FastAPI owns authentication, and the token lives in an HttpOnly cookie.** Storing the JWT in `localStorage` and calling FastAPI from the browser would expose the token to any injected script and require CORS rules covering every browser request. Instead, only server code (`fastApiFetch`) turns the cookie into a bearer header, and FastAPI alone creates tokens and decides who owns a record. The cost is an extra hop through Next.js on every request.
-
-**Server Actions instead of client-side fetching.** Forms stay plain `<form>` elements, errors come back as a small `{error, success}` object, and `revalidatePath` re-renders pages from the server, so no client-side data store has to be kept in sync. The trade-offs are reliance on Next.js-specific APIs and no optimistic updates: the page changes only after the server replies, instead of updating instantly and rolling back on failure.
-
-**A route group for the dashboard.** Instead of every page checking the user and rendering the navigation, `(dashboard)/layout.tsx` does both once. Layouts do not re-run on client-side navigation, so pages and actions also redirect on a 401. There is no `proxy.ts` file (called middleware before Next.js 16), which runs before every request and could redirect logged-out users before any page renders. The signing secret lives only in `fastapi/.env`, so a proxy could only check that the cookie exists, or it would need a FastAPI call on every request. The layout's single `/auth/me` call gives a real check without either cost. The Next.js checks only decide where to send the user, while FastAPI checks the token on every data request. Because a layout's errors escape the error boundaries inside its own group, the root `app/error.tsx` catches them.
-
-**A many-to-many association table.** A `routine_id` column on workouts would limit each workout to one routine, though the same exercise often belongs in several. The `workout_routine` table stores id pairs, and SQLAlchemy updates its rows whenever `routine.workouts` is assigned. It has no unique constraint, so duplicate ids are removed in code.
-
-**Ownership checks inside the query, returning 404.** Every lookup filters by record id and user id together. Comparing owners after fetching would allow a 403, but a 403 confirms the id exists; a 404 reveals nothing. Every single-record endpoint goes through one helper per resource (`find_owned_workout`, `find_owned_routine`), so the check is written once instead of in each endpoint.
-
-**SQLite, with tables created at startup.** PostgreSQL would need a database server before anyone could run the project, while SQLite is one file and `create_all` builds the tables automatically. The downside is that `create_all` never alters existing tables, so changing a model means deleting the database.
-
-**Inline editing with full-replacement PUT.** A native HTML `<details>` element expands each card into an edit form, with no React state for opening and closing it and no extra page or modal. The form always sends every field, so `PUT` replaces the whole record rather than patching fields. Both sides stay simple, but an API client that omits `description` (or a routine's `workouts` list) clears it, and one that omits `name` gets a 422 error.
-
-#### Limitations and future work
-
-- Sessions last 20 minutes with no refresh token. Logging out deletes the cookie, but the token stays valid until it expires.
-- A workout is only a name and notes. There are no structured sets, reps, weights, dates or history, and the order of workouts in a routine is not stored. These are the obvious next features.
-- There are no automated tests; the only checks are `npm run lint` and `npm run build`.
-- There are no database migrations, and SQLite foreign keys are not enforced, so data integrity depends on application code.
-- Deleting has no confirmation, and a failed delete shows the generic "couldn't load your training data" page instead of an inline message.
-- `readApiError` assumes `detail` is a string, which is not true for FastAPI's 422 validation errors.
-- Login has no rate limiting, the unneeded CORS middleware in `main.py` could be removed, and `requirements.txt` lists four packages the code does not use (alembic, psycopg2-binary, slowapi, email-validator).
-
-#### Running locally
-
-You need Python 3.10 or newer (developed with 3.13) and Node.js 20.9 or newer.
-
-1. Clone the repository:
-
-   ```bash
-   git clone https://github.com/CaptainSparrow23/Repbook.git
-   cd Repbook
-   ```
-
-2. Install the backend:
-
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install -r fastapi/requirements.txt
-   ```
-
-   Then create `fastapi/.env` containing these two lines, replacing the key with the output of `openssl rand -hex 32`:
-
-   ```env
-   AUTH_SECRET_KEY=replace-with-a-long-random-secret
-   AUTH_ALGORITHM=HS256
-   ```
-
-3. Start the API from inside `fastapi/`, since the code imports the `api` package by name. It runs at `http://127.0.0.1:8000`, with interactive docs at `/docs`, and creates the database on first start.
-
-   ```bash
-   cd fastapi
-   ../.venv/bin/python -m uvicorn api.main:app --reload
-   ```
-
-4. In a second terminal at the repository root, install the frontend inside `nextjs/` (not the repository root), create `nextjs/.env.local` containing `FASTAPI_URL=http://127.0.0.1:8000`, and start it:
-
-   ```bash
-   cd nextjs
-   npm install
-   npm run dev
-   ```
-
-   Then open `http://localhost:3000`.
